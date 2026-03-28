@@ -12,11 +12,13 @@ TcpClient::TcpClient()
     , connect_req_(nullptr)
     , getaddrinfo_req_(nullptr)
     , async_(nullptr)
+    , heartbeat_timer_(nullptr)
     , connected_(false)
     , should_stop_(false)
     , client_data_(nullptr)
     , expected_length_(0)
     , reading_header_(true)
+    , heartbeat_failures_(0)
 {
     loop_ = uv_loop_new();
     if (!loop_) {
@@ -30,10 +32,22 @@ TcpClient::TcpClient()
         throw std::runtime_error("Failed to initialize async handle");
     }
     async_->data = this;
+
+    heartbeat_timer_ = new uv_timer_t;
+    if (uv_timer_init(loop_, heartbeat_timer_) != 0) {
+        delete heartbeat_timer_;
+        uv_close(reinterpret_cast<uv_handle_t*>(async_), nullptr);
+        uv_loop_delete(loop_);
+        throw std::runtime_error("Failed to initialize heartbeat timer");
+    }
+    heartbeat_timer_->data = this;
 }
 
 TcpClient::~TcpClient() {
     Disconnect();
+    if (heartbeat_timer_) {
+        uv_close(reinterpret_cast<uv_handle_t*>(heartbeat_timer_), nullptr);
+    }
     if (async_) {
         uv_close(reinterpret_cast<uv_handle_t*>(async_), nullptr);
     }
@@ -42,6 +56,7 @@ TcpClient::~TcpClient() {
         uv_loop_delete(loop_);
     }
     delete async_;
+    delete heartbeat_timer_;
 }
 
 bool TcpClient::Connect(const std::string& host, uint16_t port, ConnectCallback callback) {
@@ -254,12 +269,62 @@ void TcpClient::OnConnect(uv_connect_t* req, int status) {
         return;
     }
     
+    // 启动心跳
+    client->StartHeartbeat();
+    
     if (client->connect_callback_) {
         client->connect_callback_(true);
     }
     
     delete req;
     client->connect_req_ = nullptr;
+}
+
+void TcpClient::StartHeartbeat() {
+    heartbeat_failures_ = 0;
+    // 每5秒发送一次心跳，第一次5秒后发送
+    uv_timer_start(heartbeat_timer_, OnHeartbeatTimer, 5000, 5000);
+}
+
+void TcpClient::StopHeartbeat() {
+    uv_timer_stop(heartbeat_timer_);
+}
+
+void TcpClient::OnHeartbeatTimer(uv_timer_t* handle) {
+    TcpClient* client = static_cast<TcpClient*>(handle->data);
+    client->SendHeartbeat();
+}
+
+void TcpClient::SendHeartbeat() {
+    if (!connected_ || !tcp_) {
+        return;
+    }
+    
+    tcp_protocol::Message msg;
+    msg.func = tcp_protocol::FUNC_HEARTBEAT_REQUEST;
+    msg.magic = tcp_protocol::MAGIC;
+    msg.length = tcp_protocol::HEADER_SIZE;
+    msg.func2 = tcp_protocol::FUNC_HEARTBEAT_REQUEST;
+    msg.dataSize = 0;
+    msg.data = {};
+    
+    SendMessage(msg);
+    
+    // 增加失败计数
+    heartbeat_failures_++;
+    
+    // 检查是否超过3次失败
+    if (heartbeat_failures_ >= 3) {
+        if (error_callback_) {
+            error_callback_("Heartbeat failure - connection lost");
+        }
+        Disconnect();
+    }
+}
+
+void TcpClient::HandleHeartbeatResponse() {
+    // 收到心跳响应，重置失败计数
+    heartbeat_failures_ = 0;
 }
 
 void TcpClient::OnAlloc(uv_handle_t* handle, size_t suggested_size, uv_buf_t* buf) {
@@ -381,6 +446,10 @@ void TcpClient::HandleMessage(const tcp_protocol::Message& msg) {
             if (write_callback_) {
                 write_callback_(true, msg.dataSize);
             }
+            break;
+            
+        case tcp_protocol::FUNC_HEARTBEAT_RESPONSE:
+            HandleHeartbeatResponse();
             break;
             
         default:
