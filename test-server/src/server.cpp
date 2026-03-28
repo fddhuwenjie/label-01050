@@ -62,6 +62,14 @@ void HandleMessage(uv_tcp_t* tcp, const tcp_protocol::Message& msg) {
             }
             break;
             
+        case tcp_protocol::FUNC_HEARTBEAT_REQUEST:
+            std::cout << "Received heartbeat request" << std::endl;
+            {
+                tcp_protocol::Message response = tcp_protocol::CreateHeartbeatResponse();
+                SendResponse(tcp, response);
+            }
+            break;
+            
         default:
             std::cerr << "Unknown message type: " << msg.func << std::endl;
             break;

@@ -106,4 +106,24 @@ Message CreateWriteRequest(const std::vector<uint8_t>& data) {
     return msg;
 }
 
+Message CreateHeartbeatRequest() {
+    Message msg;
+    msg.func = FUNC_HEARTBEAT_REQUEST;
+    msg.magic = MAGIC;
+    msg.func2 = FUNC_HEARTBEAT_REQUEST;
+    msg.dataSize = 0;
+    msg.length = HEADER_SIZE;
+    return msg;
+}
+
+Message CreateHeartbeatResponse() {
+    Message msg;
+    msg.func = FUNC_HEARTBEAT_RESPONSE;
+    msg.magic = MAGIC;
+    msg.func2 = FUNC_HEARTBEAT_RESPONSE;
+    msg.dataSize = 0;
+    msg.length = HEADER_SIZE;
+    return msg;
+}
+
 } // namespace tcp_protocol

@@ -70,17 +70,23 @@ private:
     static void OnWrite(uv_write_t* req, int status);
     static void OnClose(uv_handle_t* handle);
     static void AsyncCallback(uv_async_t* handle);
+    static void OnHeartbeatTimer(uv_timer_t* handle);
 
     void HandleMessage(const tcp_protocol::Message& msg);
     void SendMessage(const tcp_protocol::Message& msg);
+    void StartHeartbeat();
+    void StopHeartbeat();
+    void HandleHeartbeatTimeout();
 
     uv_loop_t* loop_;
     uv_tcp_t* tcp_;
     uv_connect_t* connect_req_;
     uv_getaddrinfo_t* getaddrinfo_req_;
     uv_async_t* async_;
+    uv_timer_t* heartbeat_timer_;
     bool connected_;
     bool should_stop_;
+    int heartbeat_missed_count_;
     
     ClientData* client_data_;
     std::string connect_host_;
