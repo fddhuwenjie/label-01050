@@ -12,11 +12,13 @@ TcpClient::TcpClient()
     , connect_req_(nullptr)
     , getaddrinfo_req_(nullptr)
     , async_(nullptr)
+    , heartbeat_timer_(nullptr)
     , connected_(false)
     , should_stop_(false)
     , client_data_(nullptr)
     , expected_length_(0)
     , reading_header_(true)
+    , heartbeat_missed_count_(0)
 {
     loop_ = uv_loop_new();
     if (!loop_) {
@@ -90,6 +92,7 @@ bool TcpClient::Connect(const std::string& host, uint16_t port, ConnectCallback 
         delete getaddrinfo_req_;
         getaddrinfo_req_ = nullptr;
         delete client_data_;
+        client_data_ = nullptr;
         uv_close(reinterpret_cast<uv_handle_t*>(tcp_), OnClose);
         tcp_ = nullptr;
         if (error_callback_) {
@@ -104,6 +107,7 @@ bool TcpClient::Connect(const std::string& host, uint16_t port, ConnectCallback 
 }
 
 void TcpClient::Disconnect() {
+    StopHeartbeat();
     if (tcp_ && connected_) {
         connected_ = false;
         uv_read_stop(reinterpret_cast<uv_stream_t*>(tcp_));
@@ -181,6 +185,7 @@ void TcpClient::OnGetAddrInfo(uv_getaddrinfo_t* req, int status, struct addrinfo
         delete req;
         client->getaddrinfo_req_ = nullptr;
         delete client->client_data_;
+        client->client_data_ = nullptr;
         uv_close(reinterpret_cast<uv_handle_t*>(client->tcp_), OnClose);
         client->tcp_ = nullptr;
         return;
@@ -217,6 +222,7 @@ void TcpClient::OnGetAddrInfo(uv_getaddrinfo_t* req, int status, struct addrinfo
             client->connect_callback_(false);
         }
         delete client->client_data_;
+        client->client_data_ = nullptr;
         uv_close(reinterpret_cast<uv_handle_t*>(client->tcp_), OnClose);
         client->tcp_ = nullptr;
     }
@@ -253,6 +259,8 @@ void TcpClient::OnConnect(uv_connect_t* req, int status) {
         client->connect_req_ = nullptr;
         return;
     }
+    
+    client->StartHeartbeat();
     
     if (client->connect_callback_) {
         client->connect_callback_(true);
@@ -361,7 +369,11 @@ void TcpClient::OnWrite(uv_write_t* req, int status) {
 void TcpClient::OnClose(uv_handle_t* handle) {
     ClientData* data = static_cast<ClientData*>(handle->data);
     if (data) {
+        TcpClient* client = data->client;
         delete data;
+        if (client) {
+            client->client_data_ = nullptr;
+        }
     }
 }
 
@@ -381,6 +393,10 @@ void TcpClient::HandleMessage(const tcp_protocol::Message& msg) {
             if (write_callback_) {
                 write_callback_(true, msg.dataSize);
             }
+            break;
+            
+        case tcp_protocol::FUNC_HEARTBEAT_RESPONSE:
+            heartbeat_missed_count_ = 0;
             break;
             
         default:
@@ -421,6 +437,63 @@ void TcpClient::SendMessage(const tcp_protocol::Message& msg) {
             error_callback_("Failed to write data");
         }
     }
+}
+
+void TcpClient::OnHeartbeatTimer(uv_timer_t* handle) {
+    TcpClient* client = static_cast<TcpClient*>(handle->data);
+    client->HandleHeartbeatTimeout();
+}
+
+void TcpClient::StartHeartbeat() {
+    if (heartbeat_timer_) {
+        return;
+    }
+    
+    heartbeat_timer_ = new uv_timer_t;
+    if (uv_timer_init(loop_, heartbeat_timer_) != 0) {
+        delete heartbeat_timer_;
+        heartbeat_timer_ = nullptr;
+        if (error_callback_) {
+            error_callback_("Failed to initialize heartbeat timer");
+        }
+        return;
+    }
+    
+    heartbeat_timer_->data = this;
+    heartbeat_missed_count_ = 0;
+    
+    // 每5秒触发一次，5000毫秒
+    uv_timer_start(heartbeat_timer_, OnHeartbeatTimer, 5000, 5000);
+}
+
+void TcpClient::StopHeartbeat() {
+    if (heartbeat_timer_) {
+        uv_timer_stop(heartbeat_timer_);
+        uv_close(reinterpret_cast<uv_handle_t*>(heartbeat_timer_), [](uv_handle_t* handle) {
+            delete reinterpret_cast<uv_timer_t*>(handle);
+        });
+        heartbeat_timer_ = nullptr;
+    }
+}
+
+void TcpClient::HandleHeartbeatTimeout() {
+    if (!connected_) {
+        StopHeartbeat();
+        return;
+    }
+    
+    if (heartbeat_missed_count_ >= 3) {
+        if (error_callback_) {
+            error_callback_("Heartbeat timeout, disconnected");
+        }
+        Disconnect();
+        return;
+    }
+    
+    tcp_protocol::Message msg = tcp_protocol::CreateHeartbeatRequest();
+    SendMessage(msg);
+    
+    heartbeat_missed_count_++;
 }
 
 } // namespace tcp_client

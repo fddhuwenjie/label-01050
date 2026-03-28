@@ -13,6 +13,8 @@ constexpr uint16_t FUNC_READ_REQUEST = 0x0000;
 constexpr uint16_t FUNC_WRITE_REQUEST = 0x0001;
 constexpr uint16_t FUNC_READ_RESPONSE = 0x0002;
 constexpr uint16_t FUNC_WRITE_RESPONSE = 0x0003;
+constexpr uint16_t FUNC_HEARTBEAT_REQUEST = 0x0004;
+constexpr uint16_t FUNC_HEARTBEAT_RESPONSE = 0x0005;
 
 // 消息头大小（不包括data部分）
 constexpr size_t HEADER_SIZE = 10; // func(2) + magic(2) + length(2) + func(2) + dataSize(2)
@@ -38,6 +40,9 @@ Message CreateReadResponse(const std::vector<uint8_t>& data);
 
 // 创建写数据响应
 Message CreateWriteResponse(uint16_t dataSize);
+
+// 创建心跳响应
+Message CreateHeartbeatResponse();
 
 } // namespace tcp_protocol
 
